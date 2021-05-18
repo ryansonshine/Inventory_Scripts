@@ -1585,9 +1585,9 @@ def delete_stack_instances(fProfile, fRegion, lAccounts, lRegions, fStackSetName
 	"""
 	fProfile is the Root Profile that owns the stackset
 	fRegion is the region where the stackset resides
-	lAccounts is a list of accounts
-	lRegion is a list of regions
-	fStackSetName is a string
+	lAccounts is a list of accounts you're removing from the stacksets
+	lRegion is a list of regions in which the child stacks are deployed
+	fStackSetName is a string referring to the stackset you're changing
 	fOperationName is a string (to identify the operation)
 	"""
 	import boto3
@@ -1596,6 +1596,7 @@ def delete_stack_instances(fProfile, fRegion, lAccounts, lRegions, fStackSetName
 	logging.warning("Deleting %s stackset over %s accounts across %s regions" % (fStackSetName, len(lAccounts), len(lRegions)))
 	session_cfn=boto3.Session(profile_name=fProfile, region_name=fRegion)
 	client_cfn=session_cfn.client('cloudformation')
+	#TODO: Wrap the next bit in a try...except
 	response=client_cfn.delete_stack_instances(
 		StackSetName=fStackSetName,
 		Accounts=lAccounts,

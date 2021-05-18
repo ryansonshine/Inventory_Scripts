@@ -23,7 +23,7 @@ import time
 import Inventory_Modules
 import argparse
 import boto3
-from colorama import init
+from colorama import init, Fore, Style
 
 '''
 TODO:
@@ -188,6 +188,16 @@ def randomString(stringLength=10):
 
 
 def _delete_stack_instances(fProfile, fRegion, fAccountList, fAccountRemove, fAccountsToSkip, fRegionList, fStackSet, fForce=True):
+	"""
+	fProfile: The credentials for the account you're working with
+	fRegion: the region in which the stackset resides
+	fAccountList: The list of accounts you're removing from the stackset
+	fAccountRemove:
+	fAccountsToSkip: Accounts to make sure you're not changing
+	fRegionList: List of regions to remove from the stackset
+	fStackSet: The stackset you're changing
+	fForce = True:
+	"""
 	session_cfn=boto3.Session(profile_name=pProfile, region_name=pRegion)
 	logging.warning("Removing instances from %s StackSet" % (fStackSet['StackSetName']))
 	try:
@@ -263,8 +273,35 @@ def _delete_stack_instances(fProfile, fRegion, fAccountList, fAccountRemove, fAc
 
 ##########################
 ERASE_LINE = '\x1b[2K'
+"""
+Variable Explanation:
+
+AccountList: 
+AccountsToSkip: List of accounts to skip mucking with, provided at the command line. This is a safety to ensure we don't mess with production (or other VIP) accounts 
+AllInstances: This is a list of records with every instance within every stackset found (with the fragment specified)
+ClosedAccounts: 
+InaccessibleAccounts: This is a list of the accounts we can't get into. These (currently) include those accounts in the OU provided (assuming it's used as a "Suspended OU"
+OrgAccounts: List of account records within the Organization. This is used to determine whether there are any accounts within the stacksets that simply don't belong in the Org.
+OrgAccountList: List of just the account numbers from the list of records above.
+ProfileAccountNumber: Account number for the profile provided
+RegionList: An aggregated list of regions found within the stacksets picked (by the string fragment provided)
+StackSetNames: List of records with stackset names and other stackset-specific info
+StackSetStillInUse: The list of stacksets still being used - to ensure they're not removed
+pAccountRemove: The provided Account Number you're looking to remove from multiple stacksets
+pCheckAccount: The flag provided as to whether you're looking to check the accounts for orphaned and closed accounts
+pForce: Whether you want to force remove the accounts from the stackset
+pProfile: The profile provided at the command line
+pRegion: The region where the StackSets you're looking through are
+pRegionRemove: The provided region to remove from all stacksets
+pStackfrag: The string fragment that is used to find only the interesting StackSets 
+pSuspendedOUId: The OU that likely contains the suspended accounts
+pdryrun: Whether we're actually going to delete anything
+verbose: The logging level
+"""
+
 
 AllInstances=[]
+InaccessibleAccounts=[]
 # StackSetNames2=[]
 
 print()
@@ -292,11 +329,9 @@ logging.error("Found %s StackSetNames that matched your fragment" % (len(StackSe
 
 # Now go through those stacksets and determine the instances, made up of accounts and regions
 for i in range(len(StackSetNames)):
-	print(ERASE_LINE, "Looking for stacksets with {} string in account {} in region {}".format(pStackfrag, ProfileAccountNumber, pRegion), end='\r')
+	# print(ERASE_LINE, "Looking for stacksets with {} string in account {} in region {}".format(pStackfrag, ProfileAccountNumber, pRegion), end='\r')
 	StackInstances=Inventory_Modules.find_stack_instances(pProfile, pRegion, StackSetNames[i]['StackSetName'])
-	# pprint.pprint(StackInstances)
-	# sys.exit(99)
-	logging.warning("Found %s Stack Instances within the StackSet %s" % (len(StackInstances), StackSetNames[i]['StackSetName']))
+	print(ERASE_LINE,"StackSet",Fore.RED+"{}".format(StackSetNames[i]['StackSetName'])+Style.RESET_ALL,"has",Fore.RED+"{} instances".format(len(StackInstances))+Style.RESET_ALL,end='\r')
 	for j in range(len(StackInstances)):
 		if 'StackId' not in StackInstances[j].keys():
 			logging.info("The stack instance found doesn't have a stackid associated. Which means it's never been deployed and probably OUTDATED")
@@ -306,9 +341,7 @@ for i in range(len(StackSetNames)):
 		elif not (StackInstances[j]['Account'] == pAccountRemove):
 			logging.info("Found a stack instance, but the account didn't match %s... exiting", pAccountRemove)
 			continue
-		# pprint.pprint(StackInstances[j])
 		logging.debug("This is Instance #: %s", str(j))
-		# logging.debug("This is StackId: %s", str(StackInstances[j]['StackId']))
 		logging.debug("This is instance status: %s", str(StackInstances[j]['Status']))
 		logging.debug("This is ChildAccount: %s", StackInstances[j]['Account'])
 		logging.debug("This is ChildRegion: %s", StackInstances[j]['Region'])
@@ -322,7 +355,7 @@ for i in range(len(StackSetNames)):
 			'StackSetName': StackInstances[j]['StackSetId'][:StackInstances[j]['StackSetId'].find(':')]
 		})
 		# pprint.pprint(AllInstances)
-		print(".",end='')
+		# print(".",end='')
 
 print(ERASE_LINE)
 logging.error("Found %s stack instances." % (len(AllInstances)))
@@ -333,18 +366,31 @@ logging.error("Found %s stack instances." % (len(AllInstances)))
 AccountList=[]
 StackSetStillInUse=[]
 RegionList=[]
+"""
+This first for loop looks over all instances within all stacksets we found and determines which stacksets will survive beyond this deletion.
+- If the stackset has instances referring to an account in the "AccountsToSkip" list, then the stackset is deemed "StillInUse" and therefore must be saved.
+- If an account number has been provided (at all), then it's assumed we're being surgical and that the stacksets are important enough to keep.
+- If an account number HASN'T been provided - then we're likely looking to modify (delete) the entire stackset. 
+	If - for a given account number, it shares a StackSet with an account where it should be skipped - that stackset name will appear in the "StackSetStillInUse" list, and will be skipped later
+	
+All of the lists created in this step will certainly have lots of duplicates  
+"""
 for i in range(len(AllInstances)):
+	if verbose < 30:
+		print(ERASE_LINE+"Working through {} of {} Instances".format(i,len(AllInstances)))
 	if AllInstances[i]['ChildAccount'] in AccountsToSkip: # Means we want to skip this account when removing
 		StackSetStillInUse.append(AllInstances[i]['StackSetName'])
-	elif not pAccountRemove=='NotProvided':     # Meaning that we're looking to remove this account from stacksets
-		StackSetStillInUse.append(AllInstances[i]['StackSetName'])
+	elif not pAccountRemove=='NotProvided':     # Meaning that we're looking to remove this specific account from stacksets
+		StackSetStillInUse.append(AllInstances[i]['StackSetName']) # Since we're being surgical, it's assumed that the StackSet is still in use for some other use
 		AccountList.append(AllInstances[i]['ChildAccount'])
-	else:   # Meaning we *didn't* provide an account to remove from stacksets
+	else:   # Meaning we *didn't* provide an account to remove from stacksets, so we're looking to remove the entire StackSet
 		AccountList.append(AllInstances[i]['ChildAccount'])
 for i in range(len(AllInstances)):
 	# This isn't specific per account, as the deletion API doesn't need it to be, and it's easier to keep a single list of all regions, instead of per StackSet
 	# If we update this script to allow the removal of individual regions as well as individual accounts, then we'll do that.
 	RegionList.append(AllInstances[i]['ChildRegion'])
+
+# This is removing duplicates from the AccountList, the StackSetStillInUse list, and the RegionsList.
 AccountList=sorted(list(set(AccountList)))
 StackSetStillInUse=sorted(list(set(StackSetStillInUse)))
 RegionList=sorted(list(set(RegionList)))
@@ -354,17 +400,20 @@ if pCheckAccount:
 	OrgAccountList=[]
 	for i in range(len(OrgAccounts)):
 		OrgAccountList.append(OrgAccounts[i]['AccountId'])
-	print("Displaying accounts within the stacksets that aren't a part of the Organization")
+	print("Searching for accounts within the stacksets that aren't a part of the Organization")
 	logging.info("There are %s accounts in the Org, and %s unique accounts in all stacksets found", len(OrgAccountList), len(AccountList))
 	ClosedAccounts=list(set(AccountList)-set(OrgAccountList))
 	InaccessibleAccounts=[]
 	for eachaccount in AccountList:
 		my_creds, role_tried = Inventory_Modules.get_child_access2(pProfile, eachaccount)
+		# If the account is inaccessible
 		if role_tried.find("failed") > 0:
 			InaccessibleAccounts.append(eachaccount)
-		ParentId = Inventory_Modules.get_parent_id(pProfile, eachaccount)
-		if ParentId == pSuspendedOUId:
-			InaccessibleAccounts.append(eachaccount)
+		else: # check to see the account is within the OU you provided that is the "Suspended OU"
+			ParentId = Inventory_Modules.get_parent_id(pProfile, eachaccount)
+			logging.info("The Parent OU of Account %s is %s" %(eachaccount, ParentId))
+			if ParentId == pSuspendedOUId:
+				InaccessibleAccounts.append(eachaccount)
 	# InaccessibleAccounts.extend(ClosedAccounts)
 	logging.info("Found %s accounts that don't belong", len(InaccessibleAccounts)+len(ClosedAccounts))
 	print("There were {} accounts found in the {} Stacksets we looked through, that are not a part of the Organization".format(len(ClosedAccounts),len(StackSetNames)))
@@ -424,12 +473,45 @@ elif pdryrun:
 			if AllInstances[i]['ChildAccount']==pAccountRemove:
 				fmt='%-50s %-15s'
 				print(fmt % ("	{}".format(AllInstances[i]['StackSetName']), "{}".format(AllInstances[i]['ChildRegion'])))
-elif not pdryrun:
+elif not pdryrun and pAccountRemove == 'NotProvided' and len(InaccessibleAccounts) > 0:
 	print()
 	print("Removing {} stack instances from the {} StackSets found".format(len(AllInstances), len(StackSetNames)))
 	# pprint.pprint(StackSetNames)
 	for m in range(len(StackSetNames)):
 		logging.info("About to remove account %s from stackset %s in regions %s ", pAccountRemove, StackSetNames[m], str(RegionList))
+		if pAccountRemove == 'LFG':
+			logging.error("The list of accounts to be removed: %s" % str(InaccessibleAccounts))
+			for item in InaccessibleAccounts:
+				result = _delete_stack_instances(pProfile, pRegion, AccountList, item, AccountsToSkip,
+												 RegionList, StackSetNames[m], pForce)
+				if result == 'Success':
+					print(ERASE_LINE + "Successfully finished StackSet {}".format(StackSetNames[m]['StackSetName']))
+				elif pForce is True and result == 'Failed-ForceIt':
+					print("Some other problem happened.")
+				elif pForce is False and result == 'Failed-ForceIt':
+					Decision = (input(
+						"Deletion of Stack Instances failed, but might work if we force it. Shall we force it? (y/n): ") in [
+									'y', 'Y'])
+					if Decision:
+						result = _delete_stack_instances(pProfile, pRegion, AccountList, pAccountRemove, AccountsToSkip,
+														 RegionList, StackSetNames[m],
+														 True)  # Try it again, forcing it this time
+						if result == 'Success':
+							print(ERASE_LINE + "Successfully retried StackSet {}".format(
+								StackSetNames[m]['StackSetName']))
+						elif pForce is True and result == 'Failed-ForceIt':
+							print(ERASE_LINE + "Some other problem happened on the retry.")
+						elif result == 'Failed-Other':
+							print(ERASE_LINE + "Something else failed on the retry... Who knows?")
+				elif result == 'Failed-Other':
+					print("Something else failed... Who knows?")
+elif not pdryrun:
+	print()
+	print("Removing {} stack instances from the {} StackSets found".format(len(AllInstances), len(StackSetNames)))
+	# pprint.pprint(StackSetNames)
+	for m in range(len(StackSetNames)):
+		logging.info("About to remove account %s from stackset %s in regions %s ", pAccountRemove, StackSetNames[m],
+					 str(RegionList))
 		result=_delete_stack_instances(pProfile, pRegion, AccountList, pAccountRemove, AccountsToSkip, RegionList, StackSetNames[m], pForce)
 		if result=='Success':
 			print(ERASE_LINE+"Successfully finished StackSet {}".format(StackSetNames[m]['StackSetName']))
@@ -447,7 +529,6 @@ elif not pdryrun:
 					print(ERASE_LINE+"Something else failed on the retry... Who knows?")
 		elif result=='Failed-Other':
 			print("Something else failed... Who knows?")
-
 	if pAccountRemove == 'NotProvided':
 		try:
 			print()
