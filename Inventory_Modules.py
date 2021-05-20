@@ -1502,12 +1502,13 @@ def find_stacksets(fProfile, fRegion, fStackFragment):
 	# 			logging.warning("Found stackset %s in Profile: %s in Region: %s with Fragment: %s and Status: %s", stack['StackSetName'], fProfile, fRegion, fStackFragment, fStatus)
 	# 			stacksetsCopy.append(stack)
 	else:
-		for stack in stacksets['Summaries']:
+		stacksets=[]
+		for stack in stacksetsCopy:
 			for stackfrag in fStackFragment:
 				if stackfrag in stack['StackSetName']:
 					logging.warning("Found stackset %s in Profile: %s in Region: %s with Fragment: %s", stack['StackSetName'], fProfile, fRegion, stackfrag)
-					stacksetsCopy.append(stack)
-	return(stacksetsCopy)
+					stacksets.append(stack)
+		return(stacksets)
 
 
 def find_stacksets2(facct_creds, fRegion, faccount, fStackFragment=""):
